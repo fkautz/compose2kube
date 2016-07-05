@@ -28,6 +28,7 @@ import (
 	"github.com/docker/libcompose/project"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/unversioned"
+	"k8s.io/kubernetes/pkg/apis/extensions"
 )
 
 var (
@@ -66,33 +67,38 @@ func main() {
 			log.Fatalf("Failed to get key %s from config", name)
 		}
 
-		rc := &api.ReplicationController{
-			TypeMeta: unversioned.TypeMeta{
-				Kind:       "ReplicationController",
-				APIVersion: "v1",
-			},
+		objectMeta := api.ObjectMeta{
+			Name:   name,
+			Labels: map[string]string{"service": name},
+		}
+		podTemplateSpec := api.PodTemplateSpec{
 			ObjectMeta: api.ObjectMeta{
-				Name:   name,
 				Labels: map[string]string{"service": name},
 			},
-			Spec: api.ReplicationControllerSpec{
-				Replicas: 1,
-				Selector: map[string]string{"service": name},
-				Template: &api.PodTemplateSpec{
-					ObjectMeta: api.ObjectMeta{
-						Labels: map[string]string{"service": name},
-					},
-					Spec: api.PodSpec{
-						Containers: []api.Container{
-							{
-								Name:    name,
-								Image:   service.Image,
-								Command: service.Command,
-							},
-						},
+			Spec: api.PodSpec{
+				Containers: []api.Container{
+					{
+						Name:    name,
+						Image:   service.Image,
+						Command: service.Command,
 					},
 				},
 			},
+		}
+
+		rs := &extensions.ReplicaSet{
+			TypeMeta: unversioned.TypeMeta{
+				Kind:       "ReplicaSet",
+				APIVersion: "extensions/v1beta1",
+			},
+			ObjectMeta: objectMeta,
+			Spec: extensions.ReplicaSetSpec{
+				Replicas: 1,
+				Selector: nil,
+				Template: podTemplateSpec,
+			},
+			// Type is "ReplicaSetStatus" and not "*ReplicaSetStatus"
+			// Result will contain Status field as a result
 		}
 
 		// Configure the container ports.
@@ -111,7 +117,7 @@ func main() {
 			}
 			ports = append(ports, api.ContainerPort{ContainerPort: int32(portNumber)})
 		}
-		rc.Spec.Template.Spec.Containers[0].Ports = ports
+		rs.Spec.Template.Spec.Containers[0].Ports = ports
 
 		// Configure the container ENV variables
 		var envs []api.EnvVar
@@ -123,7 +129,7 @@ func main() {
 				envs = append(envs, api.EnvVar{Name: ename, Value: evalue})
 			}
 		}
-		rc.Spec.Template.Spec.Containers[0].Env = envs
+		rs.Spec.Template.Spec.Containers[0].Env = envs
 
 		// Configure the volumes
 		var volumemounts []api.VolumeMount
@@ -157,32 +163,33 @@ func main() {
 			vsource := api.VolumeSource{HostPath: source}
 			volumes = append(volumes, api.Volume{Name: partName, VolumeSource: vsource})
 		}
-		rc.Spec.Template.Spec.Containers[0].VolumeMounts = volumemounts
-		rc.Spec.Template.Spec.Volumes = volumes
+		rs.Spec.Template.Spec.Containers[0].VolumeMounts = volumemounts
+		rs.Spec.Template.Spec.Volumes = volumes
 
 		// Configure the container restart policy.
 		switch service.Restart {
 		case "", "always":
-			rc.Spec.Template.Spec.RestartPolicy = api.RestartPolicyAlways
+			rs.Spec.Template.Spec.RestartPolicy = api.RestartPolicyAlways
 		case "no":
-			rc.Spec.Template.Spec.RestartPolicy = api.RestartPolicyNever
+			rs.Spec.Template.Spec.RestartPolicy = api.RestartPolicyNever
 		case "on-failure":
-			rc.Spec.Template.Spec.RestartPolicy = api.RestartPolicyOnFailure
+			rs.Spec.Template.Spec.RestartPolicy = api.RestartPolicyOnFailure
 		default:
 			log.Fatalf("Unknown restart policy %s for service %s", service.Restart, name)
 		}
 
-		data, err := json.MarshalIndent(rc, "", "  ")
+		// Save the replica set for the Docker compose service to the
+		// configs directory.
+		replicaSetData, err := json.MarshalIndent(rs, "", "  ")
 		if err != nil {
-			log.Fatalf("Failed to marshal the replication controller: %v", err)
+			log.Fatalf("Failed to marshal the replica set: %v", err)
 		}
 
-		// Save the replication controller for the Docker compose service to the
-		// configs directory.
-		outputFileName := fmt.Sprintf("%s-rc.json", name)
+		// write replicaset
+		outputFileName := fmt.Sprintf("%s-rs.json", name)
 		outputFilePath := filepath.Join(outputDir, outputFileName)
-		if err := ioutil.WriteFile(outputFilePath, data, 0644); err != nil {
-			log.Fatalf("Failed to write replication controller %s: %v", outputFileName, err)
+		if err := ioutil.WriteFile(outputFilePath, replicaSetData, 0644); err != nil {
+			log.Fatalf("Failed to write replica set %s: %v", outputFileName, err)
 		}
 		fmt.Println(outputFilePath)
 	}
